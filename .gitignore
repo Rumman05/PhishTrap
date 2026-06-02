@@ -1,22 +1,19 @@
 # Environments & Secrets
-.env
 venv/
 env/
+.env
 
 # Python
 __pycache__/
 *.py[cod]
 
-# Data and Models
+# Data and Models (Keep the folders, ignore the heavy files)
 data/*
 !data/.gitkeep
 models/*
 !models/.gitkeep
 *.csv
-*.json
 *.pkl
-*.joblib
-*.h5
 
-# Jupyter Notebooks
-.ipynb_checkpoints/
+# Flask
+instance/
