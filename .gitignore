@@ -1,0 +1,22 @@
+# Environments & Secrets
+.env
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Data and Models
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+*.csv
+*.json
+*.pkl
+*.joblib
+*.h5
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
