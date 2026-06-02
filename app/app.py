@@ -1,8 +1,14 @@
 from flask import Flask, request, render_template_string
+from dotenv import load_dotenv
 import joblib
 import os
+import re
+import difflib
+
+load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'fallback_dev_key')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, '../models/phishing_model.pkl')
@@ -15,318 +21,324 @@ try:
 except FileNotFoundError:
     MODELS_LOADED = False
 
-HTML_TEMPLATE = """
+# Utility: URL Extraction and Defanging
+def analyze_urls(text):
+    url_pattern = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
+    found_urls = url_pattern.findall(text)
+    
+    extracted = []
+    has_malicious_traits = False
+    
+    for u in found_urls:
+        # Defang for safe rendering
+        defanged = u.replace('http', 'hXXp').replace('.', '[.]')
+        
+        tags = []
+        # Check for IP-based URLs (e.g., http://192.168.1.1/login)
+        if re.search(r'https?://\d{1,3}(\.\d{1,3}){3}', u):
+            tags.append("IP-BASED ROUTING")
+            has_malicious_traits = True
+            
+        # Check for URL Shorteners
+        shorteners = ['bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'is.gd']
+        if any(s in u for s in shorteners):
+            tags.append("URL SHORTENER")
+            has_malicious_traits = True
+            
+        extracted.append({'defanged': defanged, 'tags': tags})
+        
+    return extracted, has_malicious_traits
+
+BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PhishTrap | Context-Aware Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'media',
+            theme: {
+                extend: {
+                    fontFamily: { mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', 'monospace'] }
+                }
+            }
+        }
+    </script>
     <style>
-        :root {
-            --bg: #f9fafb;
-            --surface: #ffffff;
-            --text-main: #111827;
-            --text-muted: #6b7280;
-            --border: #e5e7eb;
-            --ring: #3b82f6;
-            --btn-bg: #111827;
-            --btn-text: #ffffff;
-            --btn-hover: #374151;
-            --phish-bg: #fef2f2;
-            --phish-text: #991b1b;
-            --phish-border: #f87171;
-            --safe-bg: #f0fdf4;
-            --safe-text: #166534;
-            --safe-border: #4ade80;
-            --warn-bg: #fffbeb;
-            --warn-text: #b45309;
-            --warn-border: #fcd34d;
-            --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; border-left: 1px solid #e4e4e7; }
+        ::-webkit-scrollbar-thumb { background: #a1a1aa; }
+        @media (prefers-color-scheme: dark) {
+            ::-webkit-scrollbar-track { border-left: 1px solid #27272a; }
+            ::-webkit-scrollbar-thumb { background: #52525b; }
         }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        body {
-            font-family: var(--font);
-            background-color: var(--bg);
-            color: var(--text-main);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
-            padding: 2rem 1rem;
-            -webkit-font-smoothing: antialiased;
+        .input-box {
+            background-color: transparent;
+            border: 2px solid #d4d4d8;
+            transition: all 150ms ease;
         }
-
-        .container {
-            width: 100%;
-            max-width: 680px;
-            margin-top: 1rem;
+        .input-box:focus { border-color: #000000; outline: none; }
+        @media (prefers-color-scheme: dark) {
+            .input-box { border: 2px solid #3f3f46; background-color: #09090b; }
+            .input-box:focus { border-color: #ffffff; }
         }
-
-        header {
-            margin-bottom: 1.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .logo {
-            font-size: 1.125rem;
-            font-weight: 600;
-            letter-spacing: -0.025em;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            color: var(--text-main);
-        }
-
-        .status {
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 0.375rem;
-        }
-
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-        .online { background-color: #10b981; }
-        .offline { background-color: #ef4444; }
-
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-            padding: 2rem;
-        }
-
-        h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
-        p.subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem; line-height: 1.5; }
-
-        .section-title {
-            font-size: 0.95rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-            padding-bottom: 0.5rem;
-            border-bottom: 1px solid var(--border);
-            color: var(--text-main);
-        }
-
-        .form-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .form-group { display: flex; flex-direction: column; gap: 0.5rem; }
-        
-        label { font-size: 0.875rem; font-weight: 500; color: var(--text-main); }
-        
-        select {
-            padding: 0.6rem;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 0.875rem;
-            font-family: var(--font);
-            background-color: var(--bg);
-            color: var(--text-main);
-            outline: none;
-        }
-        
-        select:focus { border-color: var(--ring); }
-
-        textarea {
-            width: 100%;
-            height: 180px;
-            padding: 1rem;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-            font-size: 0.875rem;
-            line-height: 1.6;
-            color: var(--text-main);
-            background-color: #fcfcfc;
-            resize: vertical;
-            margin-bottom: 1.5rem;
-            outline: none;
-        }
-
-        textarea:focus {
-            border-color: var(--ring);
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
-            background-color: var(--surface);
-        }
-
-        button {
-            width: 100%;
-            background-color: var(--btn-bg);
-            color: var(--btn-text);
-            border: none;
-            border-radius: 8px;
-            padding: 0.875rem 1rem;
-            font-size: 0.875rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-        }
-
-        button:hover { background-color: var(--btn-hover); }
-
-        .result {
-            margin-top: 1.5rem;
-            padding: 1rem 1.25rem;
-            border-radius: 8px;
-            font-size: 0.875rem;
-            display: flex;
-            align-items: flex-start;
-            gap: 0.875rem;
-            border-left: 4px solid;
-        }
-
-        .result strong { display: block; margin-bottom: 0.25rem; font-size: 0.95rem; }
-        .result p { margin: 0; line-height: 1.4; opacity: 0.9; }
-
-        .result.safe { background-color: var(--safe-bg); color: var(--safe-text); border-left-color: var(--safe-border); }
-        .result.phish { background-color: var(--phish-bg); color: var(--phish-text); border-left-color: var(--phish-border); }
-        .result.warn { background-color: var(--warn-bg); color: var(--warn-text); border-left-color: var(--warn-border); }
-        .result.error { background-color: #fef2f2; color: #991b1b; border-left-color: #ef4444; }
-
-        .result-icon { flex-shrink: 0; width: 20px; height: 20px; margin-top: 2px; }
     </style>
+    <title>PHISHTRAP_V2</title>
 </head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                PhishTrap
-            </div>
-            <div class="status">
-                {% if models_loaded %}
-                    <div class="status-dot online"></div> Core Active
-                {% else %}
-                    <div class="status-dot offline"></div> Core Offline
-                {% endif %}
-            </div>
-        </header>
-
-        <div class="card">
-            <h1>Context-Aware Triage</h1>
-            <p class="subtitle">Complete the contextual profiling before supplying the raw payload for heuristic evaluation.</p>
-            
-            <form action="/predict" method="POST">
-                
-                <div class="section-title">1. Contextual Metadata</div>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Origin Profile</label>
-                        <select name="origin" required>
-                            <option value="external_unknown">External (Unknown Sender)</option>
-                            <option value="external_known">External (Known Vendor/Partner)</option>
-                            <option value="internal">Internal (Same Organization)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Communication Context</label>
-                        <select name="expected" required>
-                            <option value="unexpected">Unexpected / Unsolicited</option>
-                            <option value="expected">Expected / Active Thread</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Contains Urgency/Financial Request?</label>
-                        <select name="urgency" required>
-                            <option value="yes">Yes (Time-sensitive, money, credentials)</option>
-                            <option value="no">No</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="section-title">2. Payload Analysis</div>
-                <textarea name="email_text" placeholder="Paste the raw email body here..." spellcheck="false" required></textarea>
-                
-                <button type="submit">Execute Multi-Vector Scan</button>
-            </form>
-
-            {% if result %}
-                <div class="result {{ result.css_class }}">
-                    <svg class="result-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        {% if result.css_class == 'safe' %}
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>
-                        {% elif result.css_class == 'phish' %}
-                            <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>
-                        {% else %}
-                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>
-                        {% endif %}
-                    </svg>
-                    <div>
-                        <strong>{{ result.title }}</strong>
-                        <p>{{ result.message }}</p>
-                    </div>
-                </div>
-            {% endif %}
-        </div>
-    </div>
+<body class="font-mono bg-white dark:bg-[#0a0a0a] text-zinc-900 dark:text-zinc-200 antialiased h-screen w-full overflow-hidden flex flex-col md:flex-row">
+    {% block content %}{% endblock %}
 </body>
 </html>
 """
 
+SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
+<!-- LEFT PANE: INPUT CONTROLS -->
+<div class="w-full md:w-1/2 h-[50vh] md:h-full overflow-y-auto p-6 md:p-10 lg:p-14 border-b md:border-b-0 md:border-r border-zinc-300 dark:border-zinc-800">
+    <div class="max-w-xl mx-auto md:ml-auto md:mr-0">
+        
+        <header class="mb-10 flex justify-between items-end border-b-2 border-black dark:border-white pb-4">
+            <div>
+                <h1 class="text-2xl font-bold uppercase tracking-tight">PhishTrap_v3</h1>
+                <p class="text-xs text-zinc-500 dark:text-zinc-400 mt-1 uppercase tracking-widest">Advanced_Stateless_Triage</p>
+            </div>
+            <div class="text-[10px] bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white px-2 py-1 uppercase font-bold tracking-widest">
+                SYS_ONLINE
+            </div>
+        </header>
+
+        <form action="/predict" method="POST" class="space-y-8">
+            
+            <!-- Step 1: Metadata -->
+            <div class="space-y-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <span class="w-2 h-2 bg-black dark:bg-white"></span>
+                    <h2 class="text-sm font-bold uppercase tracking-widest">1. Metadata Parameters</h2>
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 tracking-widest">[ORIGIN_DOMAIN] *</label>
+                    <input type="text" name="sender_email" required class="input-box w-full p-3 text-sm" placeholder="Paste exact sender address...">
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="space-y-2">
+                        <label class="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 tracking-widest">[EXPECTED_CONTEXT]</label>
+                        <select name="is_expected" class="input-box w-full p-3 text-sm cursor-pointer appearance-none">
+                            <option value="unexpected">FALSE (Unexpected)</option>
+                            <option value="expected">TRUE (Active Thread)</option>
+                        </select>
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 tracking-widest">[URGENCY_FLAG]</label>
+                        <select name="is_urgent" class="input-box w-full p-3 text-sm cursor-pointer appearance-none">
+                            <option value="yes">TRUE (Demands Action)</option>
+                            <option value="no">FALSE (Informational)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: Routing Authentication (Optional) -->
+            <div class="space-y-4 pt-2">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="w-2 h-2 bg-zinc-400 dark:bg-zinc-600"></span>
+                    <h2 class="text-sm font-bold uppercase tracking-widest text-zinc-500">2. Routing Security (Optional)</h2>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 tracking-widest">[RAW_HEADERS]</label>
+                    <textarea name="raw_headers" rows="3" class="input-box w-full p-3 text-sm leading-relaxed resize-none" placeholder="Paste raw email headers to check SPF/DKIM/DMARC..."></textarea>
+                </div>
+            </div>
+
+            <!-- Step 3: Payload Input -->
+            <div class="space-y-6 pt-2">
+                <div class="flex items-center gap-2 mb-4">
+                    <span class="w-2 h-2 bg-black dark:bg-white"></span>
+                    <h2 class="text-sm font-bold uppercase tracking-widest">3. Raw Payload</h2>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 tracking-widest">[EMAIL_BODY] *</label>
+                    <textarea name="email_text" required rows="6" class="input-box w-full p-3 text-sm leading-relaxed resize-none" placeholder="Paste full email body..."></textarea>
+                </div>
+            </div>
+            
+            <button type="submit" class="w-full bg-black dark:bg-white text-white dark:text-black font-bold uppercase tracking-widest text-sm py-4 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors border-2 border-black dark:border-white">
+                Execute_Full_Spectrum_Scan
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- RIGHT PANE: OUTPUT RESULTS -->
+<div class="w-full md:w-1/2 h-[50vh] md:h-full overflow-y-auto bg-[#f4f4f5] dark:bg-[#111111] p-6 md:p-10 lg:p-14">
+    <div class="max-w-xl mx-auto md:ml-0 md:mr-auto h-full flex flex-col">
+        
+        <div class="flex items-center justify-between mb-8 pb-4 border-b border-zinc-300 dark:border-zinc-800">
+            <h2 class="text-sm font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-400">Analysis_Output</h2>
+            {% if result %}
+                <span class="text-xs uppercase font-bold px-2 py-1 bg-zinc-200 dark:bg-zinc-800">Process_Complete</span>
+            {% else %}
+                <span class="text-xs uppercase font-bold px-2 py-1 bg-zinc-200 dark:bg-zinc-800 animate-pulse">Awaiting_Input</span>
+            {% endif %}
+        </div>
+
+        {% if result %}
+            <div class="border-l-4 p-6 md:p-8 bg-white dark:bg-[#0a0a0a] border-2 shadow-sm
+                {{ 'border-l-[#dc2626] border-zinc-200 dark:border-zinc-800' if result.css == 'phish' else 
+                   ('border-l-[#d97706] border-zinc-200 dark:border-zinc-800' if result.css == 'warn' else 
+                   'border-l-[#059669] border-zinc-200 dark:border-zinc-800') }}">
+                
+                <h3 class="font-bold text-xl md:text-2xl mb-4 uppercase tracking-tight
+                    {{ 'text-[#dc2626]' if result.css == 'phish' else 
+                       ('text-[#d97706]' if result.css == 'warn' else 
+                       'text-[#059669]') }}">
+                    {{ result.title }}
+                </h3>
+                
+                <div class="text-sm text-zinc-800 dark:text-zinc-300 whitespace-pre-line leading-relaxed border-t border-zinc-100 dark:border-zinc-800 pt-4 mt-4">
+                    {{ result.message }}
+                </div>
+            </div>
+
+            <!-- IOC Extraction Block -->
+            {% if urls %}
+            <div class="mt-8 p-6 bg-white dark:bg-[#0a0a0a] border border-zinc-300 dark:border-zinc-800">
+                <h4 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-4 border-b border-zinc-200 dark:border-zinc-800 pb-2">Extracted URLs (Defanged)</h4>
+                <ul class="space-y-3">
+                    {% for u in urls %}
+                    <li class="text-xs p-3 bg-[#f4f4f5] dark:bg-[#111111] border border-zinc-200 dark:border-zinc-800 break-all text-zinc-700 dark:text-zinc-400">
+                        {{ u.defanged }}
+                        {% if u.tags %}
+                            <div class="mt-2 flex gap-2">
+                                {% for tag in u.tags %}
+                                    <span class="text-[10px] uppercase font-bold tracking-widest bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-2 py-1">[{{ tag }}]</span>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            
+            <div class="mt-8 text-xs text-zinc-500 dark:text-zinc-500 uppercase tracking-widest border border-zinc-300 dark:border-zinc-800 p-4 bg-white dark:bg-[#0a0a0a]">
+                <p>> Session data flushed from memory.</p>
+                <p>> Zero persistence verified.</p>
+            </div>
+        {% else %}
+            <!-- Default Empty State -->
+            <div class="flex-1 border-2 border-dashed border-zinc-300 dark:border-zinc-800 flex items-center justify-center p-8 text-center bg-white/50 dark:bg-[#0a0a0a]/50">
+                <div class="text-zinc-400 dark:text-zinc-600">
+                    <svg class="w-8 h-8 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <p class="text-xs uppercase font-bold tracking-widest">[ STANDBY ]</p>
+                    <p class="text-xs mt-2 opacity-70">Supply parameters in the left pane to initialize scan.</p>
+                </div>
+            </div>
+        {% endif %}
+        
+    </div>
+</div>
+""")
+
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, result=None, models_loaded=MODELS_LOADED)
+    return render_template_string(SCANNER_TEMPLATE, result=None, urls=[])
 
 @app.route('/predict', methods=['POST'])
 def predict():
     if not MODELS_LOADED:
-        return render_template_string(HTML_TEMPLATE, result={'css_class': 'error', 'title': 'System Error', 'message': 'ML Core not found.'}, models_loaded=MODELS_LOADED)
+        return render_template_string(SCANNER_TEMPLATE, result={'css': 'phish', 'title': 'SYS_FAULT: OFFLINE', 'message': 'The security engine is offline.'}, urls=[])
     
-    # Extract form data
-    origin = request.form.get('origin')
-    expected = request.form.get('expected')
-    urgency = request.form.get('urgency')
+    sender_email = request.form.get('sender_email', '').lower().strip()
+    is_expected = request.form.get('is_expected')
+    is_urgent = request.form.get('is_urgent')
+    raw_headers = request.form.get('raw_headers', '').lower()
     email_text = request.form.get('email_text', '')
     
-    # 1. Run ML Heuristics
-    vec_text = vectorizer.transform([email_text])
-    ml_prediction = model.predict(vec_text)[0] # 1 = Phish, 0 = Safe
+    domain_match = re.search(r'@([\w.-]+)', sender_email)
+    domain = domain_match.group(1) if domain_match else sender_email
     
-    # 2. Risk Assessment Logic (Human Context + ML Output)
-    result = {}
+    # 1. Homograph / Punycode Check
+    if domain.startswith('xn--') or not domain.isascii():
+        result = {
+            'css': 'phish', 
+            'title': 'CRITICAL THREAT: FAKE ALPHABET', 
+            'message': f'Analysis halted immediately.\n\nThe domain ({domain}) uses hidden international characters to look like a real website. This is a highly sophisticated scam tactic called a Homograph Attack.'
+        }
+        return render_template_string(SCANNER_TEMPLATE, result=result, urls=[])
+
+    # 2. Header Verification (SPF/DKIM/DMARC)
+    if raw_headers:
+        if 'spf=fail' in raw_headers or 'spf=softfail' in raw_headers or 'dkim=fail' in raw_headers or 'dmarc=fail' in raw_headers:
+            result = {
+                'css': 'phish', 
+                'title': 'CRITICAL THREAT: FORGED SENDER', 
+                'message': 'Analysis halted immediately.\n\nThe hidden routing data shows this email failed mandatory security identity checks (SPF/DKIM/DMARC). Someone is forging the sender address to trick you.'
+            }
+            return render_template_string(SCANNER_TEMPLATE, result=result, urls=[])
+
+    # 3. Typosquatting Check
+    high_value_targets = [
+        'microsoft.com', 'apple.com', 'paypal.com', 'amazon.com', 
+        'google.com', 'netflix.com', 'chase.com', 'bankofamerica.com'
+    ]
+    for target in high_value_targets:
+        similarity = difflib.SequenceMatcher(None, domain, target).ratio()
+        if similarity > 0.80 and domain != target:
+            result = {
+                'css': 'phish', 
+                'title': 'CRITICAL THREAT: FAKE DOMAIN', 
+                'message': f'Analysis halted immediately.\n\nThe sender is trying to trick you. Their email address ({domain}) is misspelled on purpose to look like a real company ({target}).'
+            }
+            return render_template_string(SCANNER_TEMPLATE, result=result, urls=[])
+
+    # 4. Free Provider Check
+    free_providers = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com']
+    if any(free in domain for free in free_providers) and is_urgent == 'yes':
+        result = {
+            'css': 'phish', 
+            'title': 'CRITICAL THREAT: SUSPICIOUS SENDER', 
+            'message': f'Analysis halted immediately.\n\nThis email is demanding money or urgent action, but it was sent from a free, personal email account ({domain}). Real companies do not use free email addresses for official business.'
+        }
+        return render_template_string(SCANNER_TEMPLATE, result=result, urls=[])
+
+    # Extract URLs
+    urls, has_bad_urls = analyze_urls(email_text)
+
+    # 5. ML Inference
+    vec_text = vectorizer.transform([email_text])
+    ml_prediction = int(model.predict(vec_text)[0])
     
     if ml_prediction == 1:
-        if origin == 'internal':
+        result = {
+            'css': 'phish', 
+            'title': 'THREAT DETECTED: SCAM LANGUAGE', 
+            'message': 'Our security engine analyzed the text of this email and found sneaky wording and tricks that scammers frequently use to steal information.\n\nDo not click any links or download any attachments.'
+        }
+    else:
+        # ML cleared the text, but check contexts and URLs
+        if has_bad_urls:
             result = {
-                'css_class': 'phish',
-                'title': 'CRITICAL: Potential Insider Threat or BEC',
-                'message': 'The ML model detected phishing signatures, but this is marked as an internal sender. This highly indicates Business Email Compromise (BEC). The sender account may be compromised.'
+                'css': 'warn', 
+                'title': 'WARNING: MALICIOUS LINKS DETECTED', 
+                'message': 'The text seems normal, but the email contains highly suspicious links (IP addresses or hidden URL shorteners). Scammers use these to bypass security filters. Do not click them.'
+            }
+        elif is_expected == 'unexpected' and is_urgent == 'yes':
+            result = {
+                'css': 'warn', 
+                'title': 'WARNING: HIGHLY SUSPICIOUS', 
+                'message': 'The text of this email passed our automatic checks, but the situation is very dangerous.\n\nYou were not expecting this message, yet it is pressuring you to take urgent action immediately. Please verify this request is real by calling the person directly.'
             }
         else:
             result = {
-                'css_class': 'phish',
-                'title': 'Phishing Detected',
-                'message': 'Malicious linguistic patterns detected in the payload. Do not interact.'
-            }
-    else: # ML says safe
-        if expected == 'unexpected' and urgency == 'yes' and origin == 'external_unknown':
-            result = {
-                'css_class': 'warn',
-                'title': 'Suspicious Context Triggered',
-                'message': 'The ML model cleared the text, but the context (Unexpected, Urgent, Unknown Sender) fits a severe social engineering profile. Proceed with extreme caution.'
-            }
-        else:
-            result = {
-                'css_class': 'safe',
-                'title': 'Message Cleared',
-                'message': 'No malicious heuristics found and context parameters are within normal thresholds.'
+                'css': 'safe', 
+                'title': 'STATUS: CLEARED', 
+                'message': f'This email appears safe. The sender\'s address ({domain}) passed checks, routing metadata looks normal, and no scam language or malicious links were detected.'
             }
 
-    return render_template_string(HTML_TEMPLATE, result=result, models_loaded=MODELS_LOADED)
+    return render_template_string(SCANNER_TEMPLATE, result=result, urls=urls)
 
 if __name__ == '__main__':
     app.run(debug=True)
