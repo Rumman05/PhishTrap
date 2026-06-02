@@ -1,19 +1,22 @@
-# Environments & Secrets
+# Environments
 venv/
 env/
+.venv/
+
+# Secrets
 .env
 
-# Python
+# Python Cache
 __pycache__/
 *.py[cod]
+*$py.class
 
-# Data and Models (Keep the folders, ignore the heavy files)
-data/*
-!data/.gitkeep
-models/*
-!models/.gitkeep
-*.csv
-*.pkl
+# Data & Models (Do not commit large binary artifacts)
+data/
+models/
 
-# Flask
-instance/
+# OS/Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
