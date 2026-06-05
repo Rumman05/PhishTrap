@@ -49,6 +49,29 @@ def analyze_urls(text):
         
     return extracted, has_malicious_traits
 
+# Utility: Explainable AI Word Extraction
+def extract_suspicious_keywords(email_text, vectorizer, model, top_n=3):
+    if not model or not vectorizer:
+        return ""
+    try:
+        importances = model.feature_importances_
+        feature_names = vectorizer.get_feature_names_out()
+        email_vector = vectorizer.transform([email_text]).toarray()[0]
+        
+        flagged_words = []
+        for i, tfidf_weight in enumerate(email_vector):
+            if tfidf_weight > 0:
+                flagged_words.append((feature_names[i], importances[i]))
+                
+        flagged_words.sort(key=lambda x: x[1], reverse=True)
+        top_words = [word[0] for word in flagged_words[:top_n]]
+        
+        if top_words:
+            return f"\n\nSpecifically, the AI flagged manipulative words often used in scams: {', '.join(top_words)}."
+    except Exception:
+        return ""
+    return ""
+
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -94,7 +117,6 @@ BASE_HTML = """
 """
 
 SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
-<!-- LEFT PANE: INPUT CONTROLS -->
 <div class="w-full md:w-1/2 h-[50vh] md:h-full overflow-y-auto p-6 md:p-10 lg:p-14 border-b md:border-b-0 md:border-r border-zinc-300 dark:border-zinc-800">
     <div class="max-w-xl mx-auto md:ml-auto md:mr-0">
         
@@ -110,7 +132,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
 
         <form action="/predict" method="POST" class="space-y-8">
             
-            <!-- Step 1: Metadata -->
             <div class="space-y-6">
                 <div class="flex items-center gap-2 mb-4">
                     <span class="w-2 h-2 bg-black dark:bg-white"></span>
@@ -140,7 +161,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
                 </div>
             </div>
 
-            <!-- Step 2: Routing Authentication (Optional) -->
             <div class="space-y-4 pt-2">
                 <div class="flex items-center gap-2 mb-2">
                     <span class="w-2 h-2 bg-zinc-400 dark:bg-zinc-600"></span>
@@ -152,7 +172,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
                 </div>
             </div>
 
-            <!-- Step 3: Payload Input -->
             <div class="space-y-6 pt-2">
                 <div class="flex items-center gap-2 mb-4">
                     <span class="w-2 h-2 bg-black dark:bg-white"></span>
@@ -171,7 +190,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
     </div>
 </div>
 
-<!-- RIGHT PANE: OUTPUT RESULTS -->
 <div class="w-full md:w-1/2 h-[50vh] md:h-full overflow-y-auto bg-[#f4f4f5] dark:bg-[#111111] p-6 md:p-10 lg:p-14">
     <div class="max-w-xl mx-auto md:ml-0 md:mr-auto h-full flex flex-col">
         
@@ -202,7 +220,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
                 </div>
             </div>
 
-            <!-- IOC Extraction Block -->
             {% if urls %}
             <div class="mt-8 p-6 bg-white dark:bg-[#0a0a0a] border border-zinc-300 dark:border-zinc-800">
                 <h4 class="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-4 border-b border-zinc-200 dark:border-zinc-800 pb-2">Extracted URLs (Defanged)</h4>
@@ -228,7 +245,6 @@ SCANNER_TEMPLATE = BASE_HTML.replace('{% block content %}{% endblock %}', """
                 <p>> Zero persistence verified.</p>
             </div>
         {% else %}
-            <!-- Default Empty State -->
             <div class="flex-1 border-2 border-dashed border-zinc-300 dark:border-zinc-800 flex items-center justify-center p-8 text-center bg-white/50 dark:bg-[#0a0a0a]/50">
                 <div class="text-zinc-400 dark:text-zinc-600">
                     <svg class="w-8 h-8 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
@@ -312,10 +328,11 @@ def predict():
     ml_prediction = int(model.predict(vec_text)[0])
     
     if ml_prediction == 1:
+        ai_reason = extract_suspicious_keywords(email_text, vectorizer, model)
         result = {
             'css': 'phish', 
             'title': 'THREAT DETECTED: SCAM LANGUAGE', 
-            'message': 'Our security engine analyzed the text of this email and found sneaky wording and tricks that scammers frequently use to steal information.\n\nDo not click any links or download any attachments.'
+            'message': f'Our security engine analyzed the text of this email and found sneaky wording and tricks that scammers frequently use to steal information.{ai_reason}\n\nDo not click any links or download any attachments.'
         }
     else:
         # ML cleared the text, but check contexts and URLs
